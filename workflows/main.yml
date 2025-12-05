@@ -1,0 +1,39 @@
+name: Build Pipebench for Android
+
+on:
+  push:
+    branches: [ "personal" ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Install ARM64 Cross-Compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+
+    - name: Compile for Android (Static)
+      run: |
+        aarch64-linux-gnu-gcc -static -O3 -Wall -Wextra -o pipebench pipebench.c
+        aarch64-linux-gnu-strip pipebench
+
+    - name: Generate Checksum
+      run: |
+        sha256sum pipebench > pipebench_sha256.txt
+        cat pipebench_sha256.txt
+
+    - name: Upload Binary Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: pipebench-android-aarch64
+        path: |
+          pipebench
+          pipebench_sha256.txt
+        if-no-files-found: error
+        retention-days: 5

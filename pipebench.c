@@ -1,77 +1,76 @@
-/*
+/* $Id: pipebench.c,v 1.12 2003/04/20 16:45:45 marvin Exp $
  *
  * Pipebench
  *
- * By Thomas Habets <thomas@habets.se>
+ * By Thomas Habets <thomas@habets.pp.se>
  *
  * Measures the speed of stdin/stdout communication.
  *
  * TODO:
- *    -  Variable update time  (now just updates once a second)
+ * -  Variable update time  (now just updates once a second)
  */
 /*
- *  Copyright (C) 2002 Thomas Habets <thomas@habets.se>
+ * Copyright (C) 2002 Thomas Habets <thomas@habets.pp.se>
  *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public
- *  License as published by the Free Software Foundation; either
- *  version 2 of the License, or (at your option) any later version.
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
  *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public
- *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ * You should have received a copy of the GNU General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
+
+#define _POSIX_C_SOURCE 199309L /* Required for clock_gettime */
+
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <time.h>
 #include <signal.h>
-#include <sys/time.h>
 #include <sys/types.h>
 #include <errno.h>
-
-#ifdef sun
-#define u_int8_t uint8_t
-#define u_int16_t uint16_t
-#define u_int32_t uint32_t
-#define u_int64_t uint64_t
-#endif
+#include <stdint.h>
+#include <inttypes.h>
 
 static float version = 0.40;
 
-static volatile int done = 0;
+static volatile sig_atomic_t done = 0;
 
 static void sigint(int n)
 {
+	(void)n;
 	done = 1;
+}
+
+/* Helper for monotonic time */
+static void get_mono_time(struct timespec *ts)
+{
+	if (clock_gettime(CLOCK_MONOTONIC, ts) == -1) {
+		perror("pipebench: clock_gettime");
+		exit(1);
+	}
 }
 
 /*
  * Turn a 64 int into SI or pseudo-SI units ("nunit" based).
  * Two decimal places.
- *
- * In:  64 bit int, a storage buffer, size of buffer, and unit base
- *      unit base squared must fit in unsigned long.
- *
- * Out: buffer is changed and a pointer is returned to it.
- *
- * NOTE: Bits are lost if
- *       1) Input > (2^64 / 100)
- *    *and*
- *       2) nunit < 100       (which it should never be)
  */
-static char *unitify(u_int64_t _in, char *buf, int max, unsigned long nunit,
+static char *unitify(uint64_t _in, char *buf, size_t max, unsigned long nunit,
 		     int dounit)
 {
 	int e = 0;
-	u_int64_t in;
+	uint64_t in;
 	double inf;
-	char *unit = "";
-	char *units[] = {
+	const char *unit = "";
+	const char *units[] = {
 		"",
 		"k",
 		"M",
@@ -82,7 +81,8 @@ static char *unitify(u_int64_t _in, char *buf, int max, unsigned long nunit,
 	};
 	int fra = 0;
 
-	inf = in = _in;
+	inf = (double)_in;
+	in = _in;
 	if (dounit) {
 		if (in > (nunit*nunit)) {
 			e++;
@@ -93,12 +93,9 @@ static char *unitify(u_int64_t _in, char *buf, int max, unsigned long nunit,
 			e++;
 			in/=nunit;
 		}
-		/* Ha ha ha ha ha ha, oh my god... Yeah I wish I had the
-		 * problem this part fixes.
-		 */
-		while (e && (e >= (sizeof(units)/sizeof(char*)))) {
-		e--;
-		in*=nunit;
+		while (e && (e >= (int)(sizeof(units)/sizeof(char*)))) {
+			e--;
+			in*=nunit;
 		}
 		unit = units[e];
 		inf = in / 100.0;
@@ -109,36 +106,30 @@ static char *unitify(u_int64_t _in, char *buf, int max, unsigned long nunit,
 }
 
 /*
- * Return a string representation of time differance.
- *
- * In:  Start and end time, a storage buffer and size of it.
- * Out: buffer is changed and a pointer is returned to it.
+ * Return a string representation of time difference.
  */
-static char *time_diff(struct timeval *start, struct timeval *end, char *buf,
-		       int max)
+static char *time_diff(struct timespec *start, struct timespec *end, char *buf,
+		       size_t max)
 {
-	struct timeval diff;
-	diff.tv_usec = end->tv_usec - start->tv_usec;
-	diff.tv_sec = end->tv_sec - start->tv_sec;
-	if (diff.tv_usec < 0) {
-		diff.tv_usec += 1000000;
-		diff.tv_sec--;
+	long sec = end->tv_sec - start->tv_sec;
+	long nsec = end->tv_nsec - start->tv_nsec;
+	
+	if (nsec < 0) {
+		sec--;
+		nsec += 1000000000L;
 	}
-	buf[max-1] = 0;
-	snprintf(buf,max,"%.2dh%.2dm%.2d.%.2ds",
-		 diff.tv_sec / 3600,
-		 (diff.tv_sec / 60) % 60,
-		 diff.tv_sec % 60,
-		 diff.tv_usec/10000);
+	
+	snprintf(buf,max,"%.2ldh%.2ldm%.2ld.%.2lds",
+		 sec / 3600,
+		 (sec / 60) % 60,
+		 sec % 60,
+		 nsec / 10000000L);
 	return buf;
 }
 
-/* spoon?
- *
- */
 static void usage(void)
 {
-	printf("Pipebench %1.2f, by Thomas Habets <thomas@habets.se>\n",
+	printf("Pipebench %1.2f, by Thomas Habets <thomas@habets.pp.se>\n",
 	       version);
 	printf("usage: ... | pipebench [ -ehqQIoru ] [ -b <bufsize ] "
 	       "[ -s <file> | -S <file> ]\\\n           | ...\n");
@@ -150,8 +141,8 @@ static void usage(void)
 int main(int argc, char **argv)
 {
 	int c;
-	u_int64_t datalen = 0,last_datalen = 0,speed = 0;
-	struct timeval start,tv,tv2;
+	uint64_t datalen = 0, last_datalen = 0, speed = 0;
+	struct timespec start, tv, tv2;
 	char tdbuf[64];
 	char speedbuf[64];
 	char datalenbuf[64];
@@ -223,15 +214,11 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if ((-1 == gettimeofday(&tv, NULL))
-	    || (-1 == gettimeofday(&start, NULL))) {
-		perror("pipebench: gettimeofday()");
-		if (errout) {
-			return 1;
-		}
-	}
+	/* Initial timing */
+	get_mono_time(&tv);
+	start = tv;
 
-	if ((SIG_ERR == signal(SIGINT, sigint))) {
+	if (signal(SIGINT, sigint) == SIG_ERR) {
 		perror("pipebench: signal()");
 		if (errout) {
 			return 1;
@@ -240,89 +227,90 @@ int main(int argc, char **argv)
 	
 	while (!(buffer = malloc(bufsize))) {
 		perror("pipebench: malloc()");
-		bufsize>>=1;
+		bufsize >>= 1;
+		if (bufsize < 1024) return 1; /* Safety break */
 	}
 
-	while (!feof(stdin) && !done) {
-		int n;
+	while (!done) {
+		size_t n;
 		char ctimebuf[64];
+		time_t rawtime;
+		struct tm * timeinfo;
 
-		if (-1 == (n = fread(buffer, 1, bufsize, stdin))) {
-			perror("pipebench: fread()");
-			if (errout) {
-				return 1;
+		/* Check EOF on stdin specifically */
+		int ch = fgetc(stdin);
+		if (ch == EOF) break;
+		ungetc(ch, stdin);
+
+		if ((n = fread(buffer, 1, bufsize, stdin)) == 0) {
+			if (ferror(stdin)) {
+				perror("pipebench: fread()");
+				if (errout) return 1;
 			}
-			continue;
+			break;
 		}
+
 		datalen += n;
-		while (-1 == fwrite(buffer, n, 1, stdout)) {
+		if (fwrite(buffer, 1, n, stdout) != n) {
 			perror("pipebench: fwrite()");
 			if (errout) {
 				return 1;
 			}
-		}
-		if (0) {
-			fflush(stdout);
+			break;
 		}
 
-		if (-1 == gettimeofday(&tv2,NULL)) {
-			perror("pipebench(): gettimeofday()");
-			if (errout) {
-				return 1;
-			}
-		}
-		strcpy(ctimebuf,ctime(&tv2.tv_sec));
-		if ((n=strlen(ctimebuf)) && ctimebuf[n-1] == '\n') {
-			ctimebuf[n-1] = 0;
-		}
+		/* Update loop timing */
+		get_mono_time(&tv2);
+
+		/* Display formatting logic */
+		time(&rawtime);
+		timeinfo = localtime(&rawtime);
+		strftime(ctimebuf, sizeof(ctimebuf), "%a %b %d %H:%M:%S", timeinfo);
+		
 		if (fancy && !quiet) {
 			fprintf(statusf, "%s: %sB %sB/second (%s)%c",
-				time_diff(&start,&tv2,tdbuf,sizeof(tdbuf)),
-				unitify(datalen,datalenbuf,sizeof(datalenbuf),
-					unit,dounit),
-				unitify(speed,speedbuf,sizeof(speedbuf),
-					unit,dounit),
+				time_diff(&start, &tv2, tdbuf, sizeof(tdbuf)),
+				unitify(datalen, datalenbuf, sizeof(datalenbuf),
+					unit, dounit),
+				unitify(speed, speedbuf, sizeof(speedbuf),
+					unit, dounit),
 				ctimebuf,
-				statusfn?'\n':'\r');
+				statusfn ? '\n' : '\r');
 		}
+
 		if (tv.tv_sec != tv2.tv_sec) {
 			speed = (datalen - last_datalen);
 			last_datalen = datalen;
-			if (-1 == gettimeofday(&tv,NULL)) {
-				perror("pipebench(): gettimeofday()");
-				if (errout) {
-					return 1;
-				}
-			}
+			tv = tv2; /* Update last interval time */
+			
 			if (!fancy) {
-				fprintf(statusf, "%llu\n",speed);
+				fprintf(statusf, "%" PRIu64 "\n", speed);
 			}
 		}
 	}
 	free(buffer);
+
 	if (summary) {
-		float n;
+		double seconds;
+		
+		/* Capture final end time properly */
+		get_mono_time(&tv2);
 
-		if (-1 == gettimeofday(&tv,NULL)) {
-			perror("pipebench(): gettimeofday()");
-			if (errout) {
-				return 1;
-			}
-		}
+		seconds = (tv2.tv_sec - start.tv_sec) + 
+			  (tv2.tv_nsec - start.tv_nsec) / 1e9;
 
-		n = (tv2.tv_sec - start.tv_sec)
-			+ (tv2.tv_usec - start.tv_usec) / 1000000.0;
 		fprintf(statusf,"                                     "
 			"            "
 			"                              "
 			"%c"
 			"Summary:\nPiped %sB in %s: %sB/second\n",
 			statusfn?'\n':'\r',
-			unitify(datalen,datalenbuf,sizeof(datalenbuf),
-				unit,dounit),
-			time_diff(&start,&tv2,tdbuf,sizeof(tdbuf)),
-			unitify(n?datalen/n:0,
-				speedbuf,sizeof(speedbuf),unit,dounit));
+			unitify(datalen, datalenbuf, sizeof(datalenbuf),
+				unit, dounit),
+			time_diff(&start, &tv2, tdbuf, sizeof(tdbuf)),
+			unitify(seconds > 0 ? (uint64_t)(datalen/seconds) : 0,
+				speedbuf, sizeof(speedbuf), unit, dounit));
 	}
+	if (statusfn && statusf != stderr) fclose(statusf);
 	return 0;
 }
